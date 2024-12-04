@@ -1,25 +1,20 @@
 package helloswing;
 
+import java.awt.event.ActionListener;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
-
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Set;
-
-import javax.swing.JLabel;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import javax.swing.JOptionPane;
-import javax.swing.JPanel;
-import javax.swing.JTextField;
 import javax.swing.event.TreeSelectionListener;
+import javax.swing.table.DefaultTableModel;
 import javax.swing.text.BadLocationException;
 import javax.swing.text.StyledDocument;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeModel;
-
-import java.awt.event.ActionListener;
 
 public class DatabaseManager extends javax.swing.JFrame {
     private Connection connection;
@@ -27,43 +22,42 @@ public class DatabaseManager extends javax.swing.JFrame {
     private String currentDatabase = null;
     private ActionListener tableComboListener;
     private TreeSelectionListener treeSelectionListener;
+    private final DatabaseOperations dbOps;
+    private TableOperations tableOps;
+    private StatusLogger statusLogger;
 
     public DatabaseManager(boolean isLogin, Connection connection) {
         this.isLogin = isLogin;
         this.connection = connection;
+        this.dbOps = new DatabaseOperations(connection);
+        this.tableOps = new TableOperations(connection);
         if (!this.isLogin) {
             new SQLLogin().setVisible(true);
             this.dispose();
         } else {
             initComponents();
+            this.statusLogger = new StatusLogger(txtpnStatus);
             loadDatabases();
             loadDatabaseTree();
             setLocationRelativeTo(null);
             addTreeSelectionListener();
-            txtpnStatus.setText("Connected to MySQL server successfully!\n");
+            statusLogger.logSuccess("Connected to MySQL server successfully!");
         }
     }
 
-    public void loadDatabases() {        
+    public void loadDatabases() {
         try {
-            Statement stmt = connection.createStatement();
-            ResultSet rs = stmt.executeQuery("SHOW DATABASES");
+            List<String> databases = dbOps.getDatabases();
             comboboxDB.removeAllItems();
-            Set<String> systemDatabases = new HashSet<>(Arrays.asList("information_schema", "mysql", "performance_schema", "sys"));
-            StringBuilder dbList = new StringBuilder();
-            while (rs.next()) {
-                String dbName = rs.getString(1);
-                if (!systemDatabases.contains(dbName)) {
-                    comboboxDB.addItem(dbName);
-                    dbList.append(dbName).append("\n");
-                }
-            }
+            databases.stream()
+                    .filter(dbName -> !DatabaseConstants.SYSTEM_DATABASES.contains(dbName))
+                    .forEach(comboboxDB::addItem);
+            statusLogger.logSuccess("Loaded database list successfully");            
             this.toFront();
             pack();
         } catch (SQLException e) {
-            // e.printStackTrace();
-            this.toFront();
-            JOptionPane.showMessageDialog(this, "Failed to load databases");
+            statusLogger.logError("Failed to load databases: " + e.getMessage());
+            DialogUtils.showErrorDialog(this, DatabaseConstants.ERROR_CONNECTION, "Error");
         }
     }
 
@@ -74,75 +68,74 @@ public class DatabaseManager extends javax.swing.JFrame {
         }
         comboboxTableDB.removeAllItems();
         if (database == null || database.trim().isEmpty()) {
+            statusLogger.logError(DatabaseConstants.ERROR_NO_DATABASE);
             return;
         }
         try {
-            Statement stmt = connection.createStatement();
-            ResultSet rs = stmt.executeQuery("SELECT table_name FROM information_schema.tables WHERE table_schema = '" + database + "'");
-            while (rs.next()) {
-                String tableName = rs.getString("table_name");
-                comboboxTableDB.addItem(tableName);
-            }
+            List<String> tables = dbOps.getTables(database);
+            tables.forEach(comboboxTableDB::addItem);
+            statusLogger.logSuccess("Loaded tables for database: " + database);
         } catch (SQLException e) {
-            // e.printStackTrace();
-            JOptionPane.showMessageDialog(this, "Failed to load tables");
+            statusLogger.logError("Failed to load tables: " + e.getMessage());
+            DialogUtils.showErrorDialog(this, "Failed to load tables: " + e.getMessage(), "Error");
+        }
+    }
+
+    private List<String> getTables(String database) throws SQLException {
+        if (database == null || database.trim().isEmpty()) {
+            statusLogger.logError(DatabaseConstants.ERROR_NO_DATABASE);
+            return Collections.emptyList();
+        }
+        try {
+            List<String> tables = dbOps.getTables(database);
+            statusLogger.logSuccess("Loaded tables for database: " + database);
+            return tables;
+        } catch (SQLException e) {
+            statusLogger.logError("Failed to load tables: " + e.getMessage());
+            DialogUtils.showErrorDialog(this, "Failed to load tables: " + e.getMessage(), "Error");
+            throw e;
         }
     }
 
     private void loadTableData(String tableName) {
         if (currentDatabase == null) {
-            txtpnStatus.setText(txtpnStatus.getText() + "Please select a database first\n");
+            statusLogger.logError("Please select a database first");
             return;
         }
         try {
-            Statement stmt = connection.createStatement();
-            ResultSet rs = stmt.executeQuery("SELECT * FROM " + currentDatabase + "." + tableName);
-            java.sql.ResultSetMetaData metaData = rs.getMetaData();
-            int columnCount = metaData.getColumnCount();
-            String[] columnNames = new String[columnCount];
-            for (int i = 1; i <= columnCount; i++) {
-                columnNames[i - 1] = metaData.getColumnName(i);
+            ResultSet rs = dbOps.getTableData(connection, currentDatabase, tableName);
+            try {
+                DefaultTableModel model = tableOps.createTableModel(rs);
+                tblDB.setModel(model);
+                tblDB.setFont(new java.awt.Font("Segoe UI", 0, 18));
+                tblDB.setRowHeight(30);
+                tblDB.setAutoResizeMode(javax.swing.JTable.AUTO_RESIZE_ALL_COLUMNS);
+                statusLogger.logSuccess("Successfully loaded " + tableName + " of " + currentDatabase + "!");
+            } finally {
+                rs.close();
             }
-            javax.swing.table.DefaultTableModel model = new javax.swing.table.DefaultTableModel(columnNames, 0);
-            while (rs.next()) {
-                Object[] row = new Object[columnCount];
-                for (int i = 1; i <= columnCount; i++) {
-                    row[i - 1] = rs.getObject(i);
-                }
-                model.addRow(row);
-            }
-            tblDB.setModel(model);
-            tblDB.setFont(new java.awt.Font("Segoe UI", 0, 18));
-            tblDB.setRowHeight(30);
-            tblDB.setAutoResizeMode(javax.swing.JTable.AUTO_RESIZE_ALL_COLUMNS);
-            txtpnStatus.setText(txtpnStatus.getText() + "Successfully loaded " + tableName + " of " + currentDatabase + "!\n");
         } catch (SQLException e) {
-            txtpnStatus.setText(txtpnStatus.getText() + "Error loading table: " + tableName + "\nError: " + e.getMessage() + "\n");
-            JOptionPane.showMessageDialog(this, "Failed to load table " + tableName + " of " + currentDatabase, "Error", JOptionPane.ERROR_MESSAGE);
+            statusLogger.logError("Error loading table: " + tableName + "\nError: " + e.getMessage());
+            DialogUtils.showErrorDialog(this, "Failed to load table " + tableName + " of " + currentDatabase + ": " + e.getMessage(), "Error");
         }
     }
 
     private void loadDatabaseTree() {
         DefaultMutableTreeNode root = new DefaultMutableTreeNode("Databases");
-        try (Statement stmt = connection.createStatement();
-            ResultSet rs = stmt.executeQuery("SHOW DATABASES")) {    
-            Set<String> systemDatabases = new HashSet<>(Arrays.asList("information_schema", "mysql", "performance_schema", "sys"));
-            while (rs.next()) {
-                String dbName = rs.getString(1);
-                if (!systemDatabases.contains(dbName)) {
+        try {
+            List<String> databases = dbOps.getDatabases();
+            for (String dbName : databases) {
+                if (!DatabaseConstants.SYSTEM_DATABASES.contains(dbName)) {
                     DefaultMutableTreeNode dbNode = new DefaultMutableTreeNode(dbName);
-                    root.add(dbNode);    
-                    try (Statement tableStmt = connection.createStatement();
-                        ResultSet tableRs = tableStmt.executeQuery("SHOW TABLES FROM " + dbName)) {    
-                        while (tableRs.next()) {
-                            String tableName = tableRs.getString(1);
-                            dbNode.add(new DefaultMutableTreeNode(tableName));
-                        }
+                    root.add(dbNode);
+                    List<String> tables = dbOps.getTables(dbName);
+                    for (String tableName : tables) {
+                        dbNode.add(new DefaultMutableTreeNode(tableName));
                     }
                 }
             }
         } catch (SQLException e) {
-            JOptionPane.showMessageDialog(this, "Failed to load database tree: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            DialogUtils.showErrorDialog(this, "Failed to load database tree: " + e.getMessage(), "Error");
         }
         DBTree.setModel(new DefaultTreeModel(root));
     }
@@ -150,29 +143,30 @@ public class DatabaseManager extends javax.swing.JFrame {
     private void handleDatabaseSelection(String database) {
         try {
             if (database != null && !database.isEmpty()) {
-                Statement stmt = connection.createStatement();
-                stmt.execute("USE " + database);
-                currentDatabase = database;
-                loadTables(database);
-                txtpnStatus.setText(txtpnStatus.getText() + "Database selected: " + database + "\n");
+                try (Statement stmt = connection.createStatement()) {
+                    stmt.execute("USE " + database);
+                    currentDatabase = database;
+                    loadTables(database);
+                    statusLogger.logSuccess("Database selected: " + database);
+                }
             }
         } catch (SQLException e) {
-            txtpnStatus.setText(txtpnStatus.getText() + "Error selecting database: " + e.getMessage());
-            JOptionPane.showMessageDialog(this, "Failed to select database", "Error", JOptionPane.ERROR_MESSAGE);
+            statusLogger.logError("Error selecting database: " + e.getMessage());
+            DialogUtils.showErrorDialog(this, "Error selecting database: " + e.getMessage(), "Error");
         }
     }
 
     private void addTreeSelectionListener() {
         treeSelectionListener = e -> {
             DefaultMutableTreeNode selectedNode = (DefaultMutableTreeNode) DBTree.getLastSelectedPathComponent();
-            if (selectedNode == null) return;    
+            if (selectedNode == null) return;
             if (selectedNode.getLevel() == 1) {
                 String selectedDatabase = selectedNode.getUserObject().toString();
                 handleDatabaseSelection(selectedDatabase);
             } else if (selectedNode.getLevel() == 2) {
                 DefaultMutableTreeNode parentNode = (DefaultMutableTreeNode) selectedNode.getParent();
                 String selectedDatabase = parentNode.getUserObject().toString();
-                handleDatabaseSelection(selectedDatabase); // Ensure the parent database is selected first
+                handleDatabaseSelection(selectedDatabase);
                 String selectedTable = selectedNode.getUserObject().toString();
                 loadTableData(selectedTable);
             }
@@ -204,7 +198,6 @@ public class DatabaseManager extends javax.swing.JFrame {
     // <editor-fold defaultstate="collapsed" desc="Generated
     // <editor-fold defaultstate="collapsed" desc="Generated Code">//GEN-BEGIN:initComponents
     private void initComponents() {
-        java.awt.GridBagConstraints gridBagConstraints;
 
         pnMain = new javax.swing.JPanel();
         pnFile = new javax.swing.JPanel();
@@ -268,7 +261,7 @@ public class DatabaseManager extends javax.swing.JFrame {
 
         btnClose.setFont(new java.awt.Font("Segoe UI", 0, 18)); // NOI18N
         btnClose.setText("CLOSE");
-        btnClose.setToolTipText("Close current database");
+        btnClose.setToolTipText("Close and Switch back to default database");
         btnClose.addActionListener(new java.awt.event.ActionListener() {
             public void actionPerformed(java.awt.event.ActionEvent evt) {
                 btnCloseActionPerformed(evt);
@@ -434,38 +427,39 @@ public class DatabaseManager extends javax.swing.JFrame {
         );
 
         pnTable.setBorder(javax.swing.BorderFactory.createTitledBorder(javax.swing.BorderFactory.createBevelBorder(javax.swing.border.BevelBorder.RAISED), "Table", javax.swing.border.TitledBorder.CENTER, javax.swing.border.TitledBorder.DEFAULT_POSITION));
-        pnTable.setLayout(new java.awt.GridBagLayout());
 
         tblDB.setBorder(javax.swing.BorderFactory.createBevelBorder(javax.swing.border.BevelBorder.LOWERED));
         tblDB.setFont(new java.awt.Font("Segoe UI", 0, 18)); // NOI18N
         tblDB.setModel(new javax.swing.table.DefaultTableModel(
             new Object [][] {
-                {null, null, null, null},
-                {null, null, null, null},
-                {null, null, null, null},
-                {null, null, null, null}
+                {},
+                {},
+                {},
+                {}
             },
             new String [] {
-                "Title 1", "Title 2", "Title 3", "Title 4"
+
             }
         ));
         sclpnTableDB.setViewportView(tblDB);
 
-        gridBagConstraints = new java.awt.GridBagConstraints();
-        gridBagConstraints.gridx = 0;
-        gridBagConstraints.gridy = 0;
-        gridBagConstraints.fill = java.awt.GridBagConstraints.BOTH;
-        gridBagConstraints.ipadx = 904;
-        gridBagConstraints.ipady = 650;
-        gridBagConstraints.anchor = java.awt.GridBagConstraints.NORTHWEST;
-        gridBagConstraints.weightx = 1.0;
-        gridBagConstraints.weighty = 1.0;
-        gridBagConstraints.insets = new java.awt.Insets(20, 20, 14, 17);
-        pnTable.add(sclpnTableDB, gridBagConstraints);
+        javax.swing.GroupLayout pnTableLayout = new javax.swing.GroupLayout(pnTable);
+        pnTable.setLayout(pnTableLayout);
+        pnTableLayout.setHorizontalGroup(
+            pnTableLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(pnTableLayout.createSequentialGroup()
+                .addGap(20, 20, 20)
+                .addComponent(sclpnTableDB, javax.swing.GroupLayout.PREFERRED_SIZE, 770, javax.swing.GroupLayout.PREFERRED_SIZE))
+        );
+        pnTableLayout.setVerticalGroup(
+            pnTableLayout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING)
+            .addGroup(pnTableLayout.createSequentialGroup()
+                .addGap(20, 20, 20)
+                .addComponent(sclpnTableDB, javax.swing.GroupLayout.PREFERRED_SIZE, 670, javax.swing.GroupLayout.PREFERRED_SIZE))
+        );
 
         pnTree.setBorder(javax.swing.BorderFactory.createTitledBorder(javax.swing.BorderFactory.createBevelBorder(javax.swing.border.BevelBorder.RAISED), "Database Tree"));
 
-        DBTree.setToolTipText("");
         SclpnTree.setViewportView(DBTree);
 
         btnRefreshTree.setText("Refresh");
@@ -506,7 +500,7 @@ public class DatabaseManager extends javax.swing.JFrame {
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                 .addComponent(pnTree, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                 .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
-                .addComponent(pnTable, javax.swing.GroupLayout.PREFERRED_SIZE, 819, javax.swing.GroupLayout.PREFERRED_SIZE)
+                .addComponent(pnTable, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE)
                 .addGap(0, 0, Short.MAX_VALUE))
             .addComponent(pnCurrentDB, javax.swing.GroupLayout.DEFAULT_SIZE, 1288, Short.MAX_VALUE)
         );
@@ -520,7 +514,7 @@ public class DatabaseManager extends javax.swing.JFrame {
                         .addComponent(pnCommand, javax.swing.GroupLayout.PREFERRED_SIZE, 120, javax.swing.GroupLayout.PREFERRED_SIZE)
                         .addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED)
                         .addComponent(pnStatus, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE))
-                    .addComponent(pnTable, javax.swing.GroupLayout.PREFERRED_SIZE, 0, Short.MAX_VALUE)
+                    .addComponent(pnTable, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)
                     .addGroup(pnMainLayout.createSequentialGroup()
                         .addContainerGap()
                         .addComponent(pnTree, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, Short.MAX_VALUE)))
@@ -549,7 +543,7 @@ public class DatabaseManager extends javax.swing.JFrame {
     }// </editor-fold>//GEN-END:initComponents
 
     private void btnRefreshTreeActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_btnRefreshTreeActionPerformed
-        loadDatabases();       
+        loadDatabases();
         addTreeSelectionListener(); 
         loadDatabaseTree();
         removeTreeSelectionListener();
@@ -559,91 +553,51 @@ public class DatabaseManager extends javax.swing.JFrame {
         refreshComboBoxes();
     }//GEN-LAST:event_btnRefreshComboboxActionPerformed
 
-    private void btnNewActionPerformed(java.awt.event.ActionEvent evt) {
-        String dbName = JOptionPane.showInputDialog(this, "Enter new database name:");
+    private void btnNewActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_btnNewActionPerformed
+        String dbName = DialogUtils.showInputDialog(this, DatabaseConstants.PROMPT_NEW_DB, "New Database");
         if (dbName != null && !dbName.trim().isEmpty()) {
             try {
                 if (!dbName.matches("^[a-zA-Z0-9_]+$")) {
-                    JOptionPane.showMessageDialog(this, "Database name can only contain letters, numbers and underscore", "Invalid Name", JOptionPane.ERROR_MESSAGE);
+                    DialogUtils.showErrorDialog(this, DatabaseConstants.ERROR_INVALID_NAME, "Invalid Name");
                     return;
                 }
-                Statement stmt = connection.createStatement();
-                stmt.executeUpdate("CREATE DATABASE `" + dbName + "`");
+                DatabaseOperations dbOps = new DatabaseOperations(connection);
+                dbOps.createDatabase(dbName);
                 loadDatabases();
-                StyledDocument doc = txtpnStatus.getStyledDocument();
-                doc.insertString(doc.getLength(), "Created new database: " + dbName + "\n", null);
-                JOptionPane.showMessageDialog(this, "Database '" + dbName + "' created successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);
-            } catch (SQLException | BadLocationException e) {
-                JOptionPane.showMessageDialog(this, "Error creating database: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+                statusLogger.logSuccess(String.format(DatabaseConstants.SUCCESS_CREATE, dbName));
+                DialogUtils.showInfoDialog(this, String.format(DatabaseConstants.SUCCESS_CREATE, dbName), "Success");
+            } catch (SQLException e) {
+                statusLogger.logError(String.format(DatabaseConstants.ERROR_CONNECTION, e.getMessage()));
+                DialogUtils.showErrorDialog(this, String.format(DatabaseConstants.ERROR_CONNECTION, e.getMessage()), "Error");
             }
         }
-    }
+    }//GEN-LAST:event_btnNewActionPerformed
 
     private void btnUpdateActionPerformed(java.awt.event.ActionEvent evt) {// GEN-FIRST:event_btnUpdateActionPerformed
         if (currentDatabase == null) {
-            JOptionPane.showMessageDialog(this, "Please select a database first", "No Database", JOptionPane.WARNING_MESSAGE);
+            DialogUtils.showErrorDialog(this, DatabaseConstants.ERROR_NO_DATABASE, "No Database");
             return;
-        }    
+        }
         String selectedTable = (String) comboboxTableDB.getSelectedItem();
         if (selectedTable == null) {
-            JOptionPane.showMessageDialog(this, "Please select a table first", "No Table", JOptionPane.WARNING_MESSAGE);
+            DialogUtils.showErrorDialog(this, DatabaseConstants.ERROR_NO_TABLE, "No Table");
             return;
-        }    
+        }
         int selectedRow = tblDB.getSelectedRow();
         if (selectedRow == -1) {
-            JOptionPane.showMessageDialog(this, "Please select a row to update", "No Selection", JOptionPane.WARNING_MESSAGE);
+            DialogUtils.showErrorDialog(this, DatabaseConstants.ERROR_NO_SELECTION, "No Selection");
             return;
-        }    
+        }
         try {
-            Statement stmt = connection.createStatement();
-            ResultSet rs = stmt.executeQuery("DESCRIBE " + currentDatabase + "." + selectedTable);    
-            StringBuilder setClause = new StringBuilder();
-            StringBuilder whereClause = new StringBuilder();
-            boolean firstSet = true;
-            boolean firstWhere = true;    
-            while (rs.next()) {
-                String columnName = rs.getString("Field");
-                String columnType = rs.getString("Type");
-                int columnIndex = tblDB.getColumnModel().getColumnIndex(columnName);
-                String oldValue = tblDB.getValueAt(selectedRow, columnIndex).toString();    
-                String newValue = JOptionPane.showInputDialog(this,
-                    "Update " + columnName + " (" + columnType + ")\nCurrent value: " + oldValue,
-                    oldValue);    
-                if (newValue != null && !newValue.equals(oldValue)) {
-                    if (!firstSet) {
-                        setClause.append(", ");
-                    }
-                    setClause.append(columnName).append("=");
-                    if (columnType.contains("char") || columnType.contains("text") || columnType.contains("date")) {
-                        setClause.append("'").append(newValue).append("'");
-                    } else {
-                        setClause.append(newValue);
-                    }
-                    firstSet = false;
-                }
-                if (!firstWhere) {
-                    whereClause.append(" AND ");
-                }
-                whereClause.append(columnName).append("=");
-                if (columnType.contains("char") || columnType.contains("text") || columnType.contains("date")) {
-                    whereClause.append("'").append(oldValue).append("'");
-                } else {
-                    whereClause.append(oldValue);
-                }
-                firstWhere = false;
-            }    
-            if (setClause.length() > 0) {
-                String query = "UPDATE " + selectedTable + " SET " + setClause + " WHERE " + whereClause;
-                stmt.executeUpdate(query);
-                loadTableData(selectedTable);
-                txtpnStatus.setText(txtpnStatus.getText() + "Updated record in " + selectedTable + "\n");
-                JOptionPane.showMessageDialog(this, "Record updated successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);
-            } else {
-                txtpnStatus.setText(txtpnStatus.getText() + "No changes made to record\n");
-            }    
+            tableOps.updateRecordWithPrompt(connection, currentDatabase, selectedTable, tblDB, selectedRow, this);
+            loadTableData(selectedTable);
+            statusLogger.logSuccess(String.format(DatabaseConstants.SUCCESS_UPDATE, selectedTable));
+            statusLogger.logSuccess("Updated record in " + selectedTable);
+            DialogUtils.showInfoDialog(this, "Record updated successfully!", "Success");
         } catch (SQLException e) {
-            txtpnStatus.setText(txtpnStatus.getText() + "Error updating record: " + e.getMessage() + "\n");
-            JOptionPane.showMessageDialog(this, "Error updating record: " + e.getMessage(), "Update Error", JOptionPane.ERROR_MESSAGE);
+            statusLogger.logError(String.format(DatabaseConstants.ERROR_UPDATE, e.getMessage()));
+            statusLogger.logError("Error updating record: " + e.getMessage());
+            DialogUtils.showErrorDialog(this, "Error updating record: " + e.getMessage(), "Update Error");
         }
     }// GEN-LAST:event_btnUpdateActionPerformed
 
@@ -651,233 +605,158 @@ public class DatabaseManager extends javax.swing.JFrame {
         String selectedDB = (String) comboboxDB.getSelectedItem();
         if (selectedDB != null) {
             try {
-                Statement stmt = connection.createStatement();
-                stmt.execute("USE " + selectedDB);
+                DatabaseOperations dbOps = new DatabaseOperations(connection);
                 StyledDocument doc = txtpnStatus.getStyledDocument();
-                try {
-                    doc.insertString(doc.getLength(), "Show tables of " + selectedDB + "\n", null);
-                } catch (BadLocationException e) {
-                    // e.printStackTrace();
-                }
-                ResultSet rs = stmt.executeQuery("SHOW TABLES");
-                while (rs.next()) {
-                    String tableName = rs.getString(1);
-                    doc.insertString(doc.getLength(), "Table: " + tableName + "\n", null);
-                }
+                dbOps.showTables(selectedDB, doc);
                 btnShow.setEnabled(false);
                 btnClose.setEnabled(true);
             } catch (SQLException | BadLocationException e) {
-                JOptionPane.showMessageDialog(this, "Error opening database: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+                DialogUtils.showErrorDialog(this, "Error opening database: " + e.getMessage(), "Error");
             }
         }
     }// GEN-LAST:event_btnShowActionPerformed
 
     private void btnCloseActionPerformed(java.awt.event.ActionEvent evt) {// GEN-FIRST:event_btnCloseActionPerformed
         try {
-            Statement stmt = connection.createStatement();
-            stmt.execute("USE mysql");
-
-            // Update status
+            DatabaseOperations dbOps = new DatabaseOperations(connection);
             StyledDocument doc = txtpnStatus.getStyledDocument();
-            doc.insertString(doc.getLength(), "Database closed\n", null);
+            dbOps.closeDatabase(doc);
             btnShow.setEnabled(true);
             btnClose.setEnabled(false);
         } catch (SQLException | BadLocationException e) {
-            JOptionPane.showMessageDialog(this, "Error closing database: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            DialogUtils.showErrorDialog(this, "Error closing database: " + e.getMessage(), "Error");
         }
     }// GEN-LAST:event_btnCloseActionPerformed
 
     private void btnSelectActionPerformed(java.awt.event.ActionEvent evt) {// GEN-FIRST:event_btnSelectActionPerformed
         if (currentDatabase == null) {
-            JOptionPane.showMessageDialog(this, "Please select a database first", "No Database", JOptionPane.WARNING_MESSAGE);
+            DialogUtils.showErrorDialog(this, "Please select a database first", "No Database");
             return;
-        }    
-        String query = JOptionPane.showInputDialog(this, 
-            "Enter SELECT query:\n(e.g. SELECT * FROM tablename WHERE condition)",
-            "SELECT", 
-            JOptionPane.PLAIN_MESSAGE);    
-        if (query != null && !query.trim().isEmpty()) {
+        }
+        List<String> tables;
+        try {
+            tables = getTables(currentDatabase);
+        } catch (SQLException e) {
+            return;
+        }
+        if (tables.isEmpty()) {
+            DialogUtils.showErrorDialog(this, "No tables found in the database", "No Tables");
+            return;
+        }
+        Map<String, Object> tableAndColumns = DialogUtils.showTableAndColumnsDialog(this, tables.toArray(new String[0]));
+        if (tableAndColumns.isEmpty()) {
+            return;
+        }
+        String table = (String) tableAndColumns.get("table");
+        String columns = (String) tableAndColumns.get("columns");
+        if (table != null && !table.trim().isEmpty() && columns != null && !columns.trim().isEmpty()) {
             try {
-                Statement stmt = connection.createStatement();
-                ResultSet rs = stmt.executeQuery(query);
-                java.sql.ResultSetMetaData metaData = rs.getMetaData();
-                int columnCount = metaData.getColumnCount();
-                String[] columnNames = new String[columnCount];
-                for (int i = 1; i <= columnCount; i++) {
-                    columnNames[i-1] = metaData.getColumnName(i);
-                }
-                javax.swing.table.DefaultTableModel model = new javax.swing.table.DefaultTableModel(columnNames, 0);
-                while (rs.next()) {
-                    Object[] row = new Object[columnCount];
-                    for (int i = 1; i <= columnCount; i++) {
-                        row[i-1] = rs.getObject(i);
-                    }
-                    model.addRow(row);
-                }
+                String query = "SELECT " + columns + " FROM " + QueryBuilder.escapeTableName(table);
+                DatabaseOperations dbOps = new DatabaseOperations(connection);
+                DefaultTableModel model = dbOps.executeSelectQuery(query);
                 tblDB.setModel(model);
-                txtpnStatus.setText(txtpnStatus.getText() + "Executed query: " + query + "\n");
+                statusLogger.log("Executed query: " + query);
             } catch (SQLException e) {
-                txtpnStatus.setText(txtpnStatus.getText() + "Error executing query: " + e.getMessage() + "\n");
-                JOptionPane.showMessageDialog(this, "Error executing query: " + e.getMessage(), "Query Error", JOptionPane.ERROR_MESSAGE);
+                statusLogger.logError("Error executing query: " + e.getMessage());
+                DialogUtils.showErrorDialog(this, "Error executing query: " + e.getMessage(), "Query Error");
             }
         }
     }// GEN-LAST:event_btnSelectActionPerformed
 
     private void btnInsertActionPerformed(java.awt.event.ActionEvent evt) {// GEN-FIRST:event_btnInsertActionPerformed
         if (currentDatabase == null) {
-            JOptionPane.showMessageDialog(this, "Please select a database first", "No Database", JOptionPane.WARNING_MESSAGE);
+            DialogUtils.showErrorDialog(this, "Please select a database first", "No Database");
             return;
-        }        
+        }
         String selectedTable = (String) comboboxTableDB.getSelectedItem();
         if (selectedTable == null) {
-            JOptionPane.showMessageDialog(this, "Please select a table first", "No Table", JOptionPane.WARNING_MESSAGE);
+            DialogUtils.showErrorDialog(this, "Please select a table first", "No Table");
             return;
-        }    
+        }
         try {
-            Statement stmt = connection.createStatement();
-            ResultSet rs = stmt.executeQuery("DESCRIBE " + currentDatabase + "." + selectedTable);            
-            StringBuilder columns = new StringBuilder();
-            StringBuilder values = new StringBuilder();
-            boolean first = true;            
-            while (rs.next()) {
-                String columnName = rs.getString("Field");
-                String columnType = rs.getString("Type");                
-                String value = JOptionPane.showInputDialog(this,
-                    "Enter value for " + columnName + " (" + columnType + "):");                
-                if (value != null) {
-                    if (!first) {
-                        columns.append(", ");
-                        values.append(", ");
-                    }
-                    columns.append(columnName);
-                    if (columnType.contains("char") || columnType.contains("text") || columnType.contains("date")) {
-                        values.append("'").append(value).append("'");
-                    } else {
-                        values.append(value);
-                    }
-                    first = false;
-                }
-            }    
-            String query = "INSERT INTO " + selectedTable + " (" + columns + ") VALUES (" + values + ")";
-            stmt.executeUpdate(query);
-            loadTableData(selectedTable);            
-            txtpnStatus.setText(txtpnStatus.getText() + "Inserted new record into " + selectedTable + "\n");
-            JOptionPane.showMessageDialog(this, "Record inserted successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);            
+            tableOps.insertRecordWithPrompt(currentDatabase, selectedTable, this);
+            loadTableData(selectedTable);
+            statusLogger.logSuccess("Inserted new record into " + selectedTable);
+            DialogUtils.showInfoDialog(this, "Record inserted successfully!", "Success");
         } catch (SQLException e) {
-            txtpnStatus.setText(txtpnStatus.getText() + "Error inserting record: " + e.getMessage() + "\n");
-            JOptionPane.showMessageDialog(this, "Error inserting record: " + e.getMessage(), "Insert Error", JOptionPane.ERROR_MESSAGE);
+            statusLogger.logError("Error inserting record: " + e.getMessage());
+            DialogUtils.showErrorDialog(this, "Error inserting record: " + e.getMessage(), "Insert Error");
         }
     }// GEN-LAST:event_btnInsertActionPerformed
 
     private void btnCreateActionPerformed(java.awt.event.ActionEvent evt) {// GEN-FIRST:event_btnCreateActionPerformed
         if (currentDatabase == null) {
-            JOptionPane.showMessageDialog(this, "Please select a database first", "No Database", JOptionPane.WARNING_MESSAGE);
+            DialogUtils.showErrorDialog(this, "Please select a database first", "No Database");
             return;
-        }    
-        String tableName = JOptionPane.showInputDialog(this, "Enter new table name:");
+        }
+        String tableName = DialogUtils.showInputDialog(this, "Enter new table name:", "New Table");
         if (tableName == null || tableName.trim().isEmpty()) {
-            JOptionPane.showMessageDialog(this, "Table name cannot be empty", "Invalid Name", JOptionPane.ERROR_MESSAGE);
+            DialogUtils.showErrorDialog(this, "Table name cannot be empty", "Invalid Name");
             return;
         }
-        JPanel panel = new JPanel();
-        JTextField textField = new JTextField(20);
-        textField.setToolTipText("Example: id INT PRIMARY KEY, name VARCHAR(100), ...");
-        panel.add(new JLabel("Enter columns:"));
-        panel.add(textField);
-        int result = JOptionPane.showConfirmDialog(null, panel, "Column Input", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
-        if (result != JOptionPane.OK_OPTION) {
-            return;
-        }
-        String columns = textField.getText();
+        String columns = DialogUtils.showColumnInputDialog(this);
         if (columns == null || columns.trim().isEmpty()) {
-            JOptionPane.showMessageDialog(this, "Columns cannot be empty", "Invalid Columns", JOptionPane.ERROR_MESSAGE);
+            DialogUtils.showErrorDialog(this, "Columns cannot be empty", "Invalid Columns");
             return;
         }
         try {
-            Statement stmt = connection.createStatement();
-            String query = "CREATE TABLE " + tableName + " (" + columns + ")";
-            stmt.executeUpdate(query);
+            TableOperations tableOps = new TableOperations(connection);
+            tableOps.createTable(currentDatabase, tableName, columns);
             loadTables(currentDatabase);    
-            txtpnStatus.setText(txtpnStatus.getText() + "Created new table: " + tableName + "\n");
-            JOptionPane.showMessageDialog(this, "Table '" + tableName + "' created successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);
+            statusLogger.logSuccess("Created new table: " + tableName);
+            DialogUtils.showInfoDialog(this, "Table '" + tableName + "' created successfully!", "Success");
         } catch (SQLException e) {
-            txtpnStatus.setText(txtpnStatus.getText() + "Error creating table: " + e.getMessage() + "\n");
-            JOptionPane.showMessageDialog(this, "Error creating table: " + e.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
-        }        
+            statusLogger.logError("Error creating table: " + e.getMessage());
+            DialogUtils.showErrorDialog(this, "Error creating table: " + e.getMessage(), "Error");
+        }
     }// GEN-LAST:event_btnCreateActionPerformed
 
     private void btnDeleteActionPerformed(java.awt.event.ActionEvent evt) {// GEN-FIRST:event_btnDeleteActionPerformed
         if (currentDatabase == null) {
-            JOptionPane.showMessageDialog(this, "Please select a database first", "No Database", JOptionPane.WARNING_MESSAGE);
+            DialogUtils.showErrorDialog(this, "Please select a database first", "No Database");
             return;
         }
         String selectedTable = (String) comboboxTableDB.getSelectedItem();
         if (selectedTable == null) {
-            JOptionPane.showMessageDialog(this, "Please select a table first", "No Table", JOptionPane.WARNING_MESSAGE);
+            DialogUtils.showErrorDialog(this, "Please select a table first", "No Table");
             return;
         }
         int selectedRow = tblDB.getSelectedRow();
         if (selectedRow == -1) {
-            JOptionPane.showMessageDialog(this, "Please select a row to delete", "No Selection", JOptionPane.WARNING_MESSAGE);
+            DialogUtils.showErrorDialog(this, "Please select a row to delete", "No Selection");
             return;
         }
         try {
-            Statement stmt = connection.createStatement();
-            ResultSet rs = stmt.executeQuery("DESCRIBE " + currentDatabase + "." + selectedTable);
-            StringBuilder whereClause = new StringBuilder();
-            boolean firstWhere = true;
-            while (rs.next()) {
-                String columnName = rs.getString("Field");
-                String columnType = rs.getString("Type");
-                int columnIndex = tblDB.getColumnModel().getColumnIndex(columnName);
-                String value = tblDB.getValueAt(selectedRow, columnIndex).toString();
-                if (!firstWhere) {
-                    whereClause.append(" AND ");
-                }
-                whereClause.append(columnName).append("=");
-                if (columnType.contains("char") || columnType.contains("text") || columnType.contains("date")) {
-                    whereClause.append("'").append(value).append("'");
-                } else {
-                    whereClause.append(value);
-                }
-                firstWhere = false;
-            }
-            int confirm = JOptionPane.showConfirmDialog(this, "Are you sure you want to delete this record?", "Confirm Delete", JOptionPane.YES_NO_OPTION);
-            if (confirm == JOptionPane.YES_OPTION) {
-                String query = "DELETE FROM " + selectedTable + " WHERE " + whereClause;
-                stmt.executeUpdate(query);
-                loadTableData(selectedTable);
-                txtpnStatus.setText(txtpnStatus.getText() + "Deleted record from " + selectedTable + "\n");
-                JOptionPane.showMessageDialog(this, "Record deleted successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);
-            }
+            tableOps.deleteRecordWithPrompt(currentDatabase, selectedTable, tblDB, selectedRow, this);
+            loadTableData(selectedTable);
+            statusLogger.logSuccess("Deleted record from " + selectedTable);
+            DialogUtils.showInfoDialog(this, "Record deleted successfully!", "Success");
         } catch (SQLException e) {
-            txtpnStatus.setText(txtpnStatus.getText() + "Error deleting record: " + e.getMessage() + "\n");
-            JOptionPane.showMessageDialog(this, "Error deleting record: " + e.getMessage(), "Delete Error", JOptionPane.ERROR_MESSAGE);
+            statusLogger.logError("Error deleting record: " + e.getMessage());
+            DialogUtils.showErrorDialog(this, "Error deleting record: " + e.getMessage(), "Delete Error");
         }
     }// GEN-LAST:event_btnDeleteActionPerformed
 
     private void btnDropActionPerformed(java.awt.event.ActionEvent evt) {// GEN-FIRST:event_btnDropActionPerformed
         if (currentDatabase == null) {
-            JOptionPane.showMessageDialog(this, "Please select a database first", "No Database", JOptionPane.WARNING_MESSAGE);
+            DialogUtils.showErrorDialog(this, "Please select a database first", "No Database");
             return;
         }
         String selectedTable = (String) comboboxTableDB.getSelectedItem();
         if (selectedTable == null) {
-            JOptionPane.showMessageDialog(this, "Please select a table first", "No Table", JOptionPane.WARNING_MESSAGE);
+            DialogUtils.showErrorDialog(this, "Please select a table first", "No Table");
             return;
         }
-        int confirm = JOptionPane.showConfirmDialog(this, "Are you sure you want to drop the table: " + selectedTable + "?", "Confirm Drop", JOptionPane.YES_NO_OPTION);
+        int confirm = DialogUtils.showConfirmDialog(this, "Are you sure you want to drop the table: " + selectedTable + "?", "Confirm Drop");
         if (confirm == JOptionPane.YES_OPTION) {
             try {
-                Statement stmt = connection.createStatement();
-                String query = "DROP TABLE " + currentDatabase + "." + selectedTable;
-                stmt.executeUpdate(query);
+                tableOps.dropTable(currentDatabase, selectedTable);
                 loadTables(currentDatabase);
-                txtpnStatus.setText(txtpnStatus.getText() + "Dropped table: " + selectedTable + "\n");
-                JOptionPane.showMessageDialog(this, "Table dropped successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);
+                statusLogger.logSuccess("Dropped table: " + selectedTable);
+                DialogUtils.showInfoDialog(this, "Table dropped successfully!", "Success");
             } catch (SQLException e) {
-                txtpnStatus.setText(txtpnStatus.getText() + "Error dropping table: " + e.getMessage() + "\n");
-                JOptionPane.showMessageDialog(this, "Error dropping table: " + e.getMessage(), "Drop Error", JOptionPane.ERROR_MESSAGE);
+                statusLogger.logError("Error dropping table: " + e.getMessage());
+                DialogUtils.showErrorDialog(this, "Error dropping table: " + e.getMessage(), "Drop Error");
             }
         }
     }// GEN-LAST:event_btnDropActionPerformed
@@ -898,7 +777,7 @@ public class DatabaseManager extends javax.swing.JFrame {
         if (currentDatabase != null && evt.getSource() == comboboxTableDB) {
             String selectedTable = (String) comboboxTableDB.getSelectedItem();
             if (selectedTable != null) {
-                txtpnStatus.setText(txtpnStatus.getText() + "Table selected: " + selectedTable + "\n");
+                statusLogger.log("Table selected: " + selectedTable);
             }
         }
     }// GEN-LAST:event_comboboxTableDBActionPerformed

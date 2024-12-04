@@ -1,5 +1,8 @@
 package helloswing;
 
+import java.sql.SQLException;
+// import javax.swing.JOptionPane;
+
 public class SQLLogin extends javax.swing.JFrame {
     private boolean isLogin = false;
     public SQLLogin() {
@@ -123,21 +126,21 @@ public class SQLLogin extends javax.swing.JFrame {
 
     private void btnLoginActionPerformed(java.awt.event.ActionEvent evt) {//GEN-FIRST:event_btnLoginActionPerformed
         String user = this.txtUsername.getText();
-        char[] pass = this.txtPassword.getPassword();
-        
+        char[] pass = this.txtPassword.getPassword();        
         if (user.isEmpty() || pass.length == 0) {
-            javax.swing.JOptionPane.showMessageDialog(this, "Username or password cannot be empty");
+            DialogUtils.showErrorDialog(this, "Username or password cannot be empty");
             return;
         }
-
-        java.sql.Connection conn = ConnectSQL.getConnection(user, pass);
-        if (conn != null) {
-            new DatabaseManager(true, conn).setVisible(true);
-            this.setVisible(false);
-            this.dispose();
-        } else {
-            this.txtPassword.setText("");
-            javax.swing.JOptionPane.showMessageDialog(this, "Invalid username or password");
+        try {
+            java.sql.Connection conn = ConnectSQL.getInstance().getConnection(user, pass);
+            if (conn != null) {
+                isLogin = true;
+                new DatabaseManager(true, conn).setVisible(true);
+                this.dispose();
+            }
+        } catch (SQLException e) {
+            DialogUtils.showErrorDialog(this, "Connection failed: " + e.getMessage(), "Error");
+            txtPassword.setText("");
         }
     }//GEN-LAST:event_btnLoginActionPerformed
 
