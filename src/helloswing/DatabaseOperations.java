@@ -39,6 +39,11 @@ public class DatabaseOperations {
         return model;
     }
 
+    public DefaultTableModel selectRecords(String table, String columns, Map<String, Object> conditions) throws SQLException {
+        String query = QueryBuilder.buildSelectQuery(table, columns, conditions);
+        return executeSelectQuery(query);
+    }
+
     public List<String> getDatabases() throws SQLException {
         List<String> databases = new ArrayList<>();
         try (Statement stmt = this.connection.createStatement();
@@ -108,15 +113,26 @@ public class DatabaseOperations {
 
     public void insertRecord(String table, Map<String, Object> data) throws SQLException {
         String query = QueryBuilder.buildInsertQuery(table, data);
-        try (Statement stmt = connection.createStatement()) {
-            stmt.executeUpdate(query);
+        try (PreparedStatement pstmt = connection.prepareStatement(query)) {
+            int paramIndex = 1;
+            for (Object value : data.values()) {
+                pstmt.setObject(paramIndex++, value);
+            }
+            pstmt.executeUpdate();
         }
     }
 
-    public void updateRecord(String table, Map<String, Object> data, String where) throws SQLException {
-        String query = QueryBuilder.buildUpdateQuery(table, data, where);
-        try (Statement stmt = connection.createStatement()) {
-            stmt.executeUpdate(query);
+    public void updateRecord(String table, Map<String, Object> data, Map<String, Object> conditions) throws SQLException {
+        String query = QueryBuilder.buildUpdateQuery(table, data, conditions);
+        try (PreparedStatement pstmt = connection.prepareStatement(query)) {
+            int paramIndex = 1;
+            for (Object value : data.values()) {
+                pstmt.setObject(paramIndex++, value);
+            }
+            for (Object value : conditions.values()) {
+                pstmt.setObject(paramIndex++, value);
+            }
+            pstmt.executeUpdate();
         }
     }
 
@@ -125,10 +141,5 @@ public class DatabaseOperations {
         try (Statement stmt = connection.createStatement()) {
             stmt.executeUpdate(query);
         }
-    }
-
-    public DefaultTableModel selectRecords(String table, String columns, Map<String, Object> conditions) throws SQLException {
-        String query = QueryBuilder.buildSelectQuery(table, columns, conditions);
-        return executeSelectQuery(query);
     }
 }

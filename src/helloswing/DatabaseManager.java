@@ -651,7 +651,7 @@ public class DatabaseManager extends javax.swing.JFrame {
         String columns = (String) tableAndColumns.get("columns");
         if (table != null && !table.trim().isEmpty() && columns != null && !columns.trim().isEmpty()) {
             try {
-                String query = "SELECT " + columns + " FROM " + QueryBuilder.escapeTableName(table);
+                String query = QueryBuilder.buildSelectQuery(table, columns, null);
                 DatabaseOperations dbOps = new DatabaseOperations(connection);
                 DefaultTableModel model = dbOps.executeSelectQuery(query);
                 tblDB.setModel(model);
@@ -674,7 +674,7 @@ public class DatabaseManager extends javax.swing.JFrame {
             return;
         }
         try {
-            tableOps.insertRecordWithPrompt(currentDatabase, selectedTable, this);
+            tableOps.insertRecordWithPrompt(connection, currentDatabase, selectedTable, this);
             loadTableData(selectedTable);
             statusLogger.logSuccess("Inserted new record into " + selectedTable);
             DialogUtils.showInfoDialog(this, "Record inserted successfully!", "Success");
